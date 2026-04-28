@@ -1,28 +1,149 @@
-= Antora
+= Build and Compare Enforcement
 
-The `antora` key in `ui-config.yml` defines how the documentation site is built using Antora.
+.*Module Overview*
+[sidebar]
+--
+*Duration:* 7-8 minutes +
+*Learning Objectives:*
 
-[source,yaml]
+* Build standard and FIPS container images from the Containerfiles
+* Run the test application in both containers
+* Observe the difference in algorithm enforcement between variants
+* Understand each section of the FIPS validation output
+--
+
+== Step 1: Build the Standard Python Image
+
+Build the `fips:no` image from the standard `python:3.14` base image. This represents how most Python container images are built today — with the standard OpenSSL library and no FIPS provider loaded.
+
+[source,bash,role=execute]
 ----
-antora:
-  name: modules
-  dir: www
-  modules:
-    - name: module-01 
-      label: "Writing your lab"
-    - name: module-02
-      label: "Antora"
-    - name: module-03
-      label: "Tabs"
+podman build -t fips:no -f ~/fips/Containerfile ~/fips
 ----
 
-=== Explanation
+Podman will use the pre-pulled `python:3.14` layer cache, so the build should complete quickly. The resulting image layers the `test-fips.py` script on top of the hardened base image.
 
-- `name`: The name of the documentation folder, here called `modules`.
-- `dir`: The directory where the documentation files will be located (`www`). 
-- `modules`: The list of modules that make up your lab.
+== Step 2: Build the FIPS Python Image
 
-Each module has:
+Build the `fips:yes` image from the `python:3.14-fips` base image. The `-fips` variant is configured to load the RHEL FIPS validated OpenSSL provider and enforce algorithm restrictions.
 
-- `name`: The file name within the `pages` directory.
-- `label`: A human-readable label for display in navigation.
+[source,bash,role=execute]
+----
+podman build -t fips:yes -f ~/fips/Containerfile.fips ~/fips
+----
+
+[TIP]
+====
+Note that both Containerfiles are nearly identical — the only difference is the `FROM` line. This is a key strength of the FIPS image approach: you do not need to modify your application code or build process. Switching to FIPS enforcement is a one-line change in your Containerfile.
+====
+
+== Step 3: Run the Standard Image
+
+Run the test application in the standard `fips:no` image to see what algorithms are available when the FIPS provider is not active.
+
+[source,bash,role=execute]
+----
+podman run --rm fips:no
+----
+
+Expected output:
+
+----
+============================================================
+FIPS Validated Crypto Library Test
+============================================================
+Python version: 3.14.3
+OpenSSL version: OpenSSL 3.5.5 27 Jan 2026
+FIPS provider: not active <.>
+
+============================================================
+Running FIPS Validation Checks
+============================================================
+✓ PASS - FIPS-Approved Algorithms <.>
+  All FIPS-approved algorithms available (SHA-256, HMAC-SHA256, MD5 (usedforsecurity=False), AES-256-GCM cipher)
+✗ FAIL - Disallowed Algorithms Blocked <.>
+  Failures: MD5 via hashlib.new() was allowed; MD5 via hashlib.md5() was allowed; HMAC-MD5 was allowed; CHACHA20-POLY1305 cipher was allowed
+
+✗ NOT FIPS CAPABLE
+----
+
+<.> The FIPS validated provider from RHEL is not loaded — standard OpenSSL is active
+<.> FIPS-approved algorithms like SHA-256 and AES-256-GCM are available (they always are)
+<.> The critical problem: insecure algorithms including MD5 and ChaCha20-Poly1305 are *not* blocked
+
+Any application running in this container could use MD5 for security-critical operations. This image would not meet FIPS 140-3 requirements even in a fully FIPS-enabled environment, because the cryptographic provider is not the validated one.
+
+== Step 4: Run the FIPS Image
+
+Now run the same test application in the FIPS-enforcing `fips:yes` image.
+
+[source,bash,role=execute]
+----
+podman run --rm fips:yes
+----
+
+Expected output:
+
+----
+============================================================
+FIPS Validated Crypto Library Test
+============================================================
+Python version: 3.14.3
+OpenSSL version: OpenSSL 3.5.5 27 Jan 2026 <.>
+FIPS provider: active (provider 3.0.7-395c1a240fbfffd8) <.>
+
+============================================================
+Running FIPS Validation Checks
+============================================================
+✓ PASS - FIPS-Approved Algorithms
+  All FIPS-approved algorithms available (SHA-256, HMAC-SHA256, MD5 (usedforsecurity=False), AES-256-GCM cipher)
+✓ PASS - Disallowed Algorithms Blocked <.>
+  All disallowed algorithms properly blocked (4 algorithms)
+
+✓ FIPS CAPABLE
+----
+
+<.> The main OpenSSL version is *identical* to the standard image — the underlying library is the same
+<.> The FIPS validated provider is *loaded and reporting its own version* — this is the RHEL-certified crypto module, distinct from the base OpenSSL package version
+<.> All four disallowed algorithms are now *blocked* — MD5 (for security), HMAC-MD5, and ChaCha20-Poly1305 raise errors when called
+
+== Understanding the Output
+
+=== The FIPS Provider Version
+
+Notice that the FIPS provider reports a different version (`3.0.7-395c1a240fbfffd8`) than the OpenSSL version (`3.5.5`). This is expected behavior.
+
+The FIPS validated provider is a separately certified module. NIST validates specific versions of the provider independently of the main OpenSSL package. The provider version is the one that carries the FIPS 140-3 certificate, not the OpenSSL version itself.
+
+=== MD5 With and Without Security Context
+
+Both the standard and FIPS images show `MD5 (usedforsecurity=False)` in the approved algorithms section. This is not a contradiction.
+
+Python's `hashlib` allows MD5 to be called with `usedforsecurity=False` to signal that the digest is being used for a non-security purpose — for example, a file checksum for deduplication. The FIPS provider allows this because the algorithm is not being used in a security context. When MD5 is called without that flag (the default), the FIPS provider raises a `ValueError` because the caller is implicitly claiming a security use.
+
+=== Approved Algorithms Still Available
+
+A common concern about FIPS enforcement is that it will break existing applications. The output shows this is not automatically the case. SHA-256, HMAC-SHA256, and AES-256-GCM — the most commonly used modern algorithms — pass in both images. If your application already uses these algorithms, switching to the FIPS image requires only a Containerfile change.
+
+[IMPORTANT]
+====
+Applications that use MD5 or HMAC-MD5 for security-critical operations *will* break when moved to a FIPS image. This is intentional — those algorithms do not meet the FIPS 140-3 standard. Identify and update algorithm usage before switching images in production.
+====
+
+== Summary
+
+In this module you:
+
+* Built two container images from nearly identical Containerfiles, differing only in the base image
+* Ran the same Python test application in both images
+* Observed that the standard image allows MD5 and other disallowed algorithms
+* Observed that the FIPS image blocks disallowed algorithms, even though the host is not in FIPS mode
+* Learned that approved algorithms (SHA-256, AES-256-GCM) remain available in both images
+
+.*Key Takeaways*
+
+* Switching to a FIPS image is a *one-line change* in a Containerfile
+* Algorithm enforcement works at the *container level*, independent of host FIPS mode
+* The FIPS provider is a separately validated module with its own version
+* `MD5 (usedforsecurity=False)` is a safe escape hatch for non-security uses of MD5
+* Full FIPS 140-3 certification requires both container *and* host in FIPS mode — but you can start enforcing container-level restrictions today

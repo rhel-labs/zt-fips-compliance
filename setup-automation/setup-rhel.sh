@@ -4,20 +4,31 @@ USER=rhel
 echo "Adding wheel" > /root/post-run.log
 usermod -aG wheel rhel
 
-echo "Setup vm control01" > /tmp/progress.log
+echo "Starting setup for zt-fips-compliance" > /tmp/progress.log
 
-chmod 666 /tmp/progress.log 
+chmod 666 /tmp/progress.log
 
-#dnf install -y nc
+# Fetch setup files
+TMPDIR=/tmp/lab-setup-$$
+git clone --single-branch --branch ${GIT_BRANCH:-main} --no-checkout \
+  --depth=1 --filter=tree:0 ${GIT_REPO} $TMPDIR
+git -C $TMPDIR sparse-checkout set --no-cone /setup-files
+git -C $TMPDIR checkout
+SETUP_FILES=$TMPDIR/setup-files
 
-# Epel
-#dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
-# certbot if needed
-#dnf install -y certbot
+# Create fips working directory
+mkdir -p /home/rhel/fips
 
-# Enable cockpit functionality in showroom.
-#dnf -y remove tlog cockpit-session-recording
-#echo "[WebService]" > /etc/cockpit/cockpit.conf
-#echo "Origins = https://cockpit-${GUID}.${DOMAIN}" >> /etc/cockpit/cockpit.conf
-#echo "AllowUnencrypted = true" >> /etc/cockpit/cockpit.conf
-#systemctl enable --now cockpit.socket
+# Copy test script
+cp $SETUP_FILES/fips/test-fips.py /home/rhel/fips/test-fips.py
+echo "Test script copied" >> /tmp/progress.log
+
+# Pre-pull FIPS and standard Python images
+podman pull registry.access.redhat.com/hi/python:3.14
+podman pull registry.access.redhat.com/hi/python:3.14-fips
+echo "Python images pre-pulled" >> /tmp/progress.log
+
+rm -rf $TMPDIR
+chown -R rhel:rhel /home/rhel
+
+echo "Setup complete" >> /tmp/progress.log

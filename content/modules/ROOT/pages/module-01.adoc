@@ -1,39 +1,166 @@
-= Writing your lab
+= FIPS Context and Host State
 
-== Variables
+.*Module Overview*
+[sidebar]
+--
+*Duration:* 5-7 minutes +
+*Learning Objectives:*
 
-The `lab_name` var, known as an asciidoc attribute, is set in `site.yml` and can be used to set the lab_name (Example: {lab_name}) or title of your content.
-They are both free to change its value and if you prefer to use a different var name, you can change the value of `lab_name`, for example to `title` in `site.yml` and then reference it in your content as `\{site-title}` (Ex: {site-title}).
+* Understand FIPS 140-3 and its role in regulatory compliance
+* Learn the two levels required for full FIPS compliance
+* Check host FIPS state on your lab system
+* Review the Containerfiles you will build in the next module
+--
 
-Example:
-[source,asciidoc]
+== What Is FIPS 140-3?
+
+The Federal Information Processing Standard 140-3 (FIPS 140-3) is a U.S. government standard that defines security requirements for cryptographic modules. It specifies which algorithms are approved for protecting sensitive government data and which must be blocked.
+
+Organizations that must meet FIPS 140-3 include those pursuing *FedRAMP* authorization, *DoD* systems under STIGs, and any federal contractor handling Controlled Unclassified Information (CUI).
+
+Practically speaking, FIPS 140-3 compliance means:
+
+* Only approved algorithms like SHA-256, AES-256-GCM, and HMAC-SHA256 may be used for security-critical operations
+* Insecure algorithms like MD5 (used for security), SHA-1, and ChaCha20-Poly1305 must be blocked by the cryptographic provider
+* The cryptographic modules themselves must be validated by NIST-accredited testing labs
+
+== Two Levels of FIPS Compliance
+
+Full FIPS 140-3 compliance requires enforcement at *two* distinct levels. Missing either one means your system is not fully compliant.
+
+[NOTE]
+====
+*From: Nate (Senior Sysadmin)*
+
+Hey,
+
+Before you jump in, I want to flag something that trips up a lot of folks new to FIPS work: there are two separate things you need to get right, and they're independent of each other.
+
+First, your container image needs to use the `-fips` variant. That swaps in the RHEL-validated FIPS provider for OpenSSL and locks down the algorithm list inside the container.
+
+Second, your host (or cluster node) needs to boot with `fips=1` as a kernel parameter. Without that, even a FIPS image won't be "fully" compliant from a certification standpoint — though the algorithm restrictions *will* still be enforced at the container level.
+
+In this lab environment, the host is *not* in FIPS mode (you'll confirm this in a moment). That's fine — we can still demonstrate how the container enforces algorithm restrictions independently. For a production FedRAMP deployment, you'd need both.
+
+Good luck, and ask if anything's unclear.
+
+-Nate
+====
+
+Here is what each level requires:
+
+[cols="1,2,2"]
+|===
+|Level |What it covers |How to enable
+
+|*Container level*
+|Validated FIPS crypto provider inside the container; algorithm restrictions enforced for the containerized application
+|Use the `-fips` image variant (e.g., `python:3.14-fips`)
+
+|*Host/Kernel level*
+|Kernel-level FIPS mode; required for full certification; affects all processes on the host
+|Boot with `fips=1` kernel parameter; FIPS-validated kernel crypto modules
+
+|===
+
+[IMPORTANT]
+====
+This lab environment is *not* in host FIPS mode. You will confirm that in the next step. However, the container-level enforcement still works — and that is exactly what you will observe in Module 02.
+====
+
+== Step 1: Check Host FIPS State
+
+The kernel exposes its FIPS mode status through a virtual file in `/proc`. A value of `0` means FIPS mode is not active. A value of `1` means the kernel was booted with `fips=1`.
+
+[source,bash,role=execute]
 ----
-{my_var}
+cat /proc/sys/crypto/fips_enabled
 ----
 
-Variable rendered:
-
-{my_var}
-
-== Inserting Images
-
-To display an image in your Antora documentation, place the image file in the `assets/images/` folder of the module, then reference it using the `image::[]` macro
-
-=== Basic Syntax
-
-[source,asciidoc]
 ----
-image::example-image.png[Example Image, width=100, height=100]
+0
 ----
 
-This will render the `example-image.png` image as it follows:
+As expected, the host is not in FIPS mode. This is a standard lab environment — not a hardened production system. The `0` confirms that the kernel boot parameter `fips=1` was not set.
 
-image::example-image.png[Example Image, width=100, height=100]
+[TIP]
+====
+To enable host FIPS mode on RHEL, you would run:
 
-=== Understanding the Antora Configuration
+[source,bash]
+----
+fips-mode-setup --enable
+reboot
+----
 
-This lab explains the purpose and structure of the YAML configuration used in an Antora-based documentation site.
+This installs the appropriate crypto policies, sets `fips=1` in the kernel command line, and reboots. After the reboot, `cat /proc/sys/crypto/fips_enabled` would return `1`.
+====
 
-=== Basic Structure
+== Step 2: Review the Containerfiles
 
-The configuration is written in YAML `ui-config.yml` and includes two main sections: `antora` and `tabs`. Click next to know more.
+In the next module you will build two container images from these Containerfiles. Both images run the same Python test application — the only difference is the base image: one uses the standard `python:3.14` image, the other uses `python:3.14-fips`.
+
+The test application (`test-fips.py`) is already in your home directory at `~/fips/test-fips.py`. It checks:
+
+* Whether the FIPS validated provider is active in OpenSSL
+* Whether FIPS-approved algorithms (SHA-256, AES-256-GCM, HMAC-SHA256) are available
+* Whether disallowed algorithms (MD5, HMAC-MD5, ChaCha20-Poly1305) are blocked
+
+=== Standard Python Containerfile
+
+[source,bash,role=execute,subs=attributes+]
+----
+cat > ~/fips/Containerfile << 'EOF'
+FROM {rhhi-registry}/python:3.14
+
+COPY test-fips.py .
+
+USER ${CONTAINER_DEFAULT_USER}
+STOPSIGNAL SIGINT
+ENTRYPOINT ["python", "./test-fips.py"]
+EOF
+----
+
+This uses the standard Red Hat Hardened Image for Python 3.14. It includes security hardening but does not load the FIPS validated provider. Disallowed algorithms remain available to applications.
+
+=== FIPS Python Containerfile
+
+[source,bash,role=execute,subs=attributes+]
+----
+cat > ~/fips/Containerfile.fips << 'EOF'
+FROM {rhhi-registry}/python:3.14-fips
+
+COPY test-fips.py .
+
+USER ${CONTAINER_DEFAULT_USER}
+STOPSIGNAL SIGINT
+ENTRYPOINT ["python", "./test-fips.py"]
+EOF
+----
+
+This uses the FIPS variant of the same Python 3.14 image. The `-fips` variant:
+
+* Includes the RHEL FIPS validated OpenSSL provider
+* Configures OpenSSL to load the FIPS provider at startup
+* Blocks all non-FIPS-approved algorithms, even when the host kernel is not in FIPS mode
+
+[NOTE]
+====
+The `test-fips.py` file is already at `~/fips/test-fips.py` — it was placed there during lab setup. You can examine it if you'd like to understand what tests are being run.
+
+[source,bash,role=execute]
+----
+cat ~/fips/test-fips.py
+----
+====
+
+== Summary
+
+In this module you learned:
+
+* FIPS 140-3 requires enforcement at both the *container level* (image variant) and the *host/kernel level* (boot parameter)
+* This lab environment has a host FIPS state of `0` — not in FIPS mode
+* Container-level enforcement operates independently of host FIPS mode
+* You reviewed the two Containerfiles that differ only in base image
+
+In the next module, you will build both images and run the test application to directly observe the difference in algorithm enforcement.

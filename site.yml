@@ -1,9 +1,8 @@
 ---
 site:
-  title: "Your Labs Title"
+  title: FIPS Compliance with Container Images
   url: https://github.com/rhpds/showroom_template_zero
   start_page: modules::module-01.adoc
-
 content:
   sources:
     - url: ./
