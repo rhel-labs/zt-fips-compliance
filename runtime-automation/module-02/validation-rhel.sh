@@ -1,15 +1,15 @@
 #!/bin/sh
 echo "Validating module-02" >> /tmp/progress.log
 
-if ! runuser -u rhel -- podman image exists localhost/fips:yes; then
+if ! runuser -u rhel -- podman image exists localhost/fips:yes 2>/dev/null; then
     echo "FAIL: fips:yes image not found" >> /tmp/progress.log
-    echo "HINT: Run 'podman build -t fips:yes -f ~/fips/Containerfile.fips ~/fips' to build it" >> /tmp/progress.log
+    echo "HINT: Did you complete Step 3 to build the fips:yes image?" >> /tmp/progress.log
     exit 1
 fi
 
-if ! runuser -u rhel -- podman image exists localhost/fips:no; then
+if ! runuser -u rhel -- podman image exists localhost/fips:no 2>/dev/null; then
     echo "FAIL: fips:no image not found" >> /tmp/progress.log
-    echo "HINT: Run 'podman build -t fips:no -f ~/fips/Containerfile ~/fips' to build it" >> /tmp/progress.log
+    echo "HINT: Did you complete Step 3 to build the fips:no image?" >> /tmp/progress.log
     exit 1
 fi
 
@@ -19,6 +19,6 @@ if echo "$OUTPUT" | grep -q "FIPS CAPABLE"; then
     exit 0
 else
     echo "FAIL: fips:yes output does not show FIPS CAPABLE" >> /tmp/progress.log
-    echo "$OUTPUT" >> /tmp/progress.log
+    echo "HINT: Check that Containerfile.fips uses the python:3.14-fips base image" >> /tmp/progress.log
     exit 1
 fi
