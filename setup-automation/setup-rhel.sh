@@ -22,6 +22,7 @@ mkdir -p /home/rhel/fips
 # Copy test script
 cp $SETUP_FILES/fips/test-fips.py /home/rhel/fips/test-fips.py
 echo "Test script copied" >> /tmp/progress.log
+chown -R rhel:rhel /home/rhel
 
 # Pre-pull FIPS and standard Python images into rhel's rootless store
 su -l rhel -c "podman pull registry.access.redhat.com/hi/python:3.14"
@@ -29,6 +30,5 @@ su -l rhel -c "podman pull registry.access.redhat.com/hi/python:3.14-fips"
 echo "Python images pre-pulled" >> /tmp/progress.log
 
 rm -rf $TMPDIR
-chown -R rhel:rhel /home/rhel
 
 echo "Setup complete" >> /tmp/progress.log
